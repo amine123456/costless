@@ -1,0 +1,58 @@
+stages:
+  - lint
+  - test
+
+default:
+  image: ghcr.io/astral-sh/uv:0.8-python3.12-bookworm-slim
+  interruptible: true
+
+variables:
+  UV_CACHE_DIR: .uv-cache
+  UV_LINK_MODE: copy
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+.uv:
+  cache:
+    key:
+      files: [uv.lock]
+    paths: [.uv-cache]
+  before_script:
+    - uv sync --locked
+  after_script:
+    - uv cache prune --ci
+
+lint:
+  extends: .uv
+  stage: lint
+  script:
+    - uv run ruff check --exit-zero --output-format=gitlab --output-file=gl-code-quality.json .
+    - uv run ruff check .
+    - uv run ruff format --check .
+    - uv run mypy
+  artifacts:
+    when: always
+    reports:
+      codequality: gl-code-quality.json
+
+test:
+  extends: .uv
+  stage: test
+  parallel:
+    matrix:
+      - PYTHON: ["3.12", "3.13"]
+  image: ghcr.io/astral-sh/uv:0.8-python${PYTHON}-bookworm-slim
+  script:
+    - uv run pytest --cov --cov-report=term --cov-report=xml --junitxml=junit.xml
+  coverage: '/^TOTAL.*\s+(\d+(?:\.\d+)?)%/'
+  artifacts:
+    when: always
+    reports:
+      junit: junit.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml

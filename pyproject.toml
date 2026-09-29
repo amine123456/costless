@@ -1,0 +1,86 @@
+[project]
+name = "costless"
+version = "0.1.0"
+description = "CI quality gate for LLM applications: evaluates quality, cost and latency against a baseline and blocks regressions."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Mohamed Amine Dahmani" }]
+requires-python = ">=3.12"
+keywords = ["llm", "evaluation", "ci", "observability", "opentelemetry", "quality-gate"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
+]
+dependencies = [
+    "typer>=0.15",
+]
+
+[project.urls]
+Homepage = "https://github.com/amine123456/costless"
+Issues = "https://github.com/amine123456/costless/issues"
+
+[project.scripts]
+costless = "costless.cli:app"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.13",
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "ruff>=0.8",
+]
+
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/costless"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F", "I", "B", "UP", "SIM", "C4", "RUF", "N", "S", "PTH", "PL", "TID", "ANN",
+]
+ignore = [
+    "PLR0913", # config-heavy constructors are expected
+    "PLR2004", # magic values are fine in thresholds and tests
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "ANN", "PLR"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--strict-config"]
+xfail_strict = true
+
+[tool.coverage.run]
+source = ["costless"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError"]

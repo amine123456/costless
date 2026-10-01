@@ -225,6 +225,33 @@ class TestOpenAICompatible:
         assert asyncio.run(openai_provider(handler).complete(REQUEST)).text == "hi"
         assert responses == []
 
+    def test_google_retry_info_and_list_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        google_429 = [
+            {
+                "error": {
+                    "code": 429,
+                    "message": "You exceeded your current quota.\n* Quota exceeded for metric",
+                    "status": "RESOURCE_EXHAUSTED",
+                    "details": [
+                        {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "0s"}
+                    ],
+                }
+            }
+        ]
+        sleeps: list[float] = []
+
+        async def fake_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+
+        monkeypatch.setattr("costless.providers.openai_compat.asyncio.sleep", fake_sleep)
+        google_429[0]["error"]["details"][0]["retryDelay"] = "37s"  # type: ignore[index]
+        provider = openai_provider(
+            lambda request: httpx2.Response(429, json=google_429), max_retries=1
+        )
+        with pytest.raises(ProviderError, match=r"429: You exceeded your current quota\.$"):
+            asyncio.run(provider.complete(REQUEST))
+        assert sleeps == [37.0]  # the server's delay, not exponential backoff
+
     def test_gives_up_after_max_retries(self) -> None:
         calls = 0
 
@@ -288,6 +315,13 @@ class TestFactory:
         assert model_from_env(env) == "grok-4.7"
         assert model_from_env({**env, "COSTLESS_MODEL": "grok-other"}) == "grok-other"
 
+    def test_gemini(self) -> None:
+        env = {"COSTLESS_PROVIDER": "gemini", "GEMINI_API_KEY": "k"}
+        provider = provider_from_env(env)
+        assert isinstance(provider, OpenAICompatibleProvider)
+        assert provider.name == "gemini"
+        assert model_from_env(env) == "gemini-3.5-flash"
+
     def test_openai_needs_explicit_model(self) -> None:
         env = {"COSTLESS_PROVIDER": "openai", "OPENAI_API_KEY": "k"}
         assert isinstance(provider_from_env(env), OpenAICompatibleProvider)
@@ -299,8 +333,8 @@ class TestFactory:
             provider_from_env({"COSTLESS_PROVIDER": "xai"})
 
     def test_unknown_provider(self) -> None:
-        with pytest.raises(ConfigError, match="unknown COSTLESS_PROVIDER 'gemini'"):
-            provider_from_env({"COSTLESS_PROVIDER": "gemini"})
+        with pytest.raises(ConfigError, match="unknown COSTLESS_PROVIDER 'bard'"):
+            provider_from_env({"COSTLESS_PROVIDER": "bard"})
 
     def test_replay_and_record(self, tmp_path: Path) -> None:
         recording = tmp_path / "rec.jsonl"

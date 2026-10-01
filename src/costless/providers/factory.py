@@ -4,7 +4,7 @@ against Anthropic, xAI, any OpenAI-compatible endpoint, or a replay file.
 =====================  ==================================================
 Variable               Meaning
 =====================  ==================================================
-COSTLESS_PROVIDER      anthropic (default) | xai | openai | replay
+COSTLESS_PROVIDER      anthropic (default) | gemini | xai | openai | replay
 COSTLESS_MODEL         model id; defaults per provider (see below)
 COSTLESS_BASE_URL      override the endpoint of xai / openai
 COSTLESS_REPLAY_FILE   recording to replay (provider ``replay``)
@@ -14,7 +14,7 @@ COSTLESS_TIMEOUT_S     per-request timeout, default 120
 =====================  ==================================================
 
 Credentials: ``ANTHROPIC_API_KEY`` (or any credential the Anthropic SDK
-resolves), ``XAI_API_KEY``, ``OPENAI_API_KEY``.
+resolves), ``GEMINI_API_KEY``, ``XAI_API_KEY``, ``OPENAI_API_KEY``.
 """
 
 import os
@@ -29,11 +29,13 @@ from costless.providers.replay import RecordingProvider, ReplayProvider
 
 DEFAULT_MODELS = {
     "anthropic": "claude-opus-5-5",
+    "gemini": "gemini-3.5-flash",
     "xai": "grok-4.7",
 }
 
 _OPENAI_COMPATIBLE = {
     # name: (default base URL, API key variable)
+    "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY"),
     "xai": ("https://api.x.ai/v1", "XAI_API_KEY"),
     "openai": ("https://api.openai.com/v1", "OPENAI_API_KEY"),
 }

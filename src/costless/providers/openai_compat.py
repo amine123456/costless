@@ -11,14 +11,16 @@ from costless.models import Usage
 from costless.providers.base import Completion, CompletionRequest, Provider
 
 _RETRYABLE_STATUS = frozenset({408, 409, 429, 500, 502, 503, 504})
-_MAX_BACKOFF_S = 30.0
+_MAX_BACKOFF_S = 60.0
+_GOOGLE_RETRY_INFO = "type.googleapis.com/google.rpc.RetryInfo"
 
 
 class OpenAICompatibleProvider(Provider):
     """Calls ``POST {base_url}/chat/completions``.
 
     Retries 408/409/429/5xx and transport errors with exponential backoff and
-    jitter, honouring ``Retry-After`` when the server sends it.
+    jitter. A server-provided delay (``Retry-After``, or Google's ``RetryInfo``)
+    takes precedence, capped at 60 seconds.
     """
 
     def __init__(
@@ -70,18 +72,15 @@ class OpenAICompatibleProvider(Provider):
             if response.status_code < 400:
                 return response
             if response.status_code in _RETRYABLE_STATUS and attempt < self._max_retries:
-                await asyncio.sleep(self._backoff(attempt, response.headers.get("retry-after")))
+                await asyncio.sleep(self._backoff(attempt, _server_retry_delay(response)))
                 attempt += 1
                 continue
             msg = f"{self.name} API error {response.status_code}: {_error_message(response)}"
             raise ProviderError(msg)
 
-    def _backoff(self, attempt: int, retry_after: str | None) -> float:
-        if retry_after is not None:
-            try:
-                return min(float(retry_after), _MAX_BACKOFF_S)
-            except ValueError:
-                pass  # HTTP-date form; fall back to exponential backoff
+    def _backoff(self, attempt: int, server_delay_s: float | None) -> float:
+        if server_delay_s is not None:
+            return min(server_delay_s, _MAX_BACKOFF_S)
         delay: float = self._backoff_base_s * (2**attempt)
         return float(min(delay + random.uniform(0, delay / 2), _MAX_BACKOFF_S))  # noqa: S311
 
@@ -123,11 +122,47 @@ def _usage(provider: str, model: str, raw: dict[str, Any]) -> Usage:
     )
 
 
+def _server_retry_delay(response: httpx2.Response) -> float | None:
+    header = response.headers.get("retry-after")
+    if header is not None:
+        try:
+            return max(float(header), 0.0)
+        except ValueError:
+            pass  # HTTP-date form: not worth parsing, fall back to backoff
+    # Google APIs put the delay in the body: error.details[].retryDelay = "37s".
+    error = _error_object(response)
+    details = error.get("details") if error else None
+    for detail in details if isinstance(details, list) else ():
+        if isinstance(detail, dict) and detail.get("@type") == _GOOGLE_RETRY_INFO:
+            raw = str(detail.get("retryDelay", ""))
+            try:
+                return max(float(raw.removesuffix("s")), 0.0)
+            except ValueError:
+                return None
+    return None
+
+
+def _error_object(response: httpx2.Response) -> dict[str, Any] | None:
+    try:
+        doc = response.json()
+    except ValueError:
+        return None
+    if isinstance(doc, list) and doc:  # Google wraps the error object in a list
+        doc = doc[0]
+    error = doc.get("error") if isinstance(doc, dict) else None
+    return error if isinstance(error, dict) else None
+
+
 def _error_message(response: httpx2.Response) -> str:
+    error = _error_object(response)
+    if error is not None and "message" in error:
+        return str(error["message"]).split("\n")[0][:300]
     try:
         doc = response.json()
     except ValueError:
         return response.text[:300] or "(empty body)"
+    if isinstance(doc, list) and doc:
+        doc = doc[0]
     error = doc.get("error") if isinstance(doc, dict) else None
     if isinstance(error, dict) and "message" in error:
         return str(error["message"])

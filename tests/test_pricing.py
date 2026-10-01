@@ -34,6 +34,12 @@ def test_default_table_matches_published_xai_prices() -> None:
     assert cost.usd == Decimal("8.50")
 
 
+def test_default_table_matches_published_gemini_prices() -> None:
+    # Values from https://ai.google.dev/gemini-api/docs/pricing (2026-10-01), paid tier.
+    price = PricingTable.default().price_for("gemini-3.5-flash")
+    assert price == ModelPrice(input=Decimal("1.50"), output=Decimal(9), cache_read=Decimal("0.15"))
+
+
 def test_cost_combines_all_token_kinds() -> None:
     table = PricingTable.default()
     # 1M input @ $4 + 0.5M output @ $20 + 2M cache reads @ $0.20 + 0.1M cache writes @ $5

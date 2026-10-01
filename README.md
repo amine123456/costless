@@ -14,10 +14,11 @@
   per-attempt error capture. It reports the mean and variance per case and flags
   flaky cases.
 - A provider-agnostic model interface, configured with environment variables:
-  Anthropic (default), xAI, any OpenAI-compatible endpoint, or a replay file.
+  Anthropic (default), Google Gemini, xAI, any OpenAI-compatible endpoint, or a
+  replay file.
   Every call is metered, with retries and backoff.
-- Cost tracking: token counts priced from a configurable table (Anthropic and xAI
-  list prices built in), cost per attempt, per case and per run, and a budget gate.
+- Cost tracking: token counts priced from a configurable table (Anthropic, Gemini and
+  xAI list prices built in), cost per attempt, per case and per run, and a budget gate.
   The budget also acts as a hard stop during a run.
 - Record and replay of model responses, for deterministic offline tests.
 - `run.json`, a versioned results document that keeps every attempt.

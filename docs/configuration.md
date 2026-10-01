@@ -162,9 +162,9 @@ completion = await provider.complete(
 
 | Variable | Meaning |
 |---|---|
-| `COSTLESS_PROVIDER` | `anthropic` (default), `xai`, `openai` or `replay` |
-| `COSTLESS_MODEL` | model id; defaults to `claude-opus-5-5` (anthropic) and `grok-4.7` (xai) |
-| `COSTLESS_BASE_URL` | endpoint override for `xai` / `openai`, e.g. a local vLLM or Ollama server |
+| `COSTLESS_PROVIDER` | `anthropic` (default), `gemini`, `xai`, `openai` or `replay` |
+| `COSTLESS_MODEL` | model id; defaults to `claude-opus-5-5` (anthropic), `gemini-3.5-flash` (gemini) and `grok-4.7` (xai) |
+| `COSTLESS_BASE_URL` | endpoint override for `gemini` / `xai` / `openai`, e.g. a local vLLM or Ollama server |
 | `COSTLESS_RECORD_FILE` | append every real call to this JSONL recording |
 | `COSTLESS_REPLAY_FILE` | recording to replay with `COSTLESS_PROVIDER=replay` |
 | `COSTLESS_MAX_RETRIES` | retries on 408/409/429/5xx and connection errors (default 3) |
@@ -173,11 +173,13 @@ completion = await provider.complete(
 Credentials:
 
 - `ANTHROPIC_API_KEY`, or any credential the Anthropic SDK resolves.
+- `GEMINI_API_KEY`.
 - `XAI_API_KEY`.
 - `OPENAI_API_KEY`.
 
-The `anthropic` provider uses the official SDK; `xai` and `openai` use the Chat
-Completions API.
+The `anthropic` provider uses the official SDK. `gemini`, `xai` and `openai` use
+the OpenAI-compatible Chat Completions API (for Gemini, Google's
+`/v1beta/openai` endpoint).
 
 Each provider handles a few details:
 
@@ -204,8 +206,9 @@ Each attempt's token usage is priced with a table of USD prices per million toke
   and the [xAI pricing page](https://docs.x.ai/developers/pricing). The date
   they were retrieved is recorded in `src/costless/data/pricing.yaml`.
 - **Not modelled:** batch discounts, Anthropic fast mode and the US data-residency
-  multiplier, 1-hour cache writes (priced at the 5-minute rate), and xAI's
-  long-context tier (requests of 200k prompt tokens or more).
+  multiplier, 1-hour cache writes (priced at the 5-minute rate), xAI's
+  long-context tier (requests of 200k prompt tokens or more), and Gemini
+  context-cache storage fees.
 - **Reasoning tokens:** on OpenAI-compatible APIs they are counted as output. The
   larger of `completion_tokens` and `total_tokens - prompt_tokens` is used, so
   billed output is never under-counted.

@@ -27,11 +27,18 @@
   xAI list prices built in), cost per attempt, per case and per run, and a budget gate.
   The budget also acts as a hard stop during a run.
 - Record and replay of model responses, for deterministic offline tests.
+- Baseline comparison with a paired cluster bootstrap. It blocks a merge only
+  on regressions that are both statistically significant and larger than the
+  tolerance you set, for quality, failure rate, cost and p95 latency. Absolute
+  limits are also supported. The output is a Markdown before/after report,
+  ready to post on a merge request. See [How gating works](docs/statistics.md).
 - `run.json`, a versioned results document that keeps every attempt.
 
 ```bash
 costless validate -c costless.yaml    # check config, datasets and scorers
 costless calibrate -c costless.yaml   # how well does the LLM judge agree with humans?
+costless compare -b main.json --candidate .costless/run.json -c costless.yaml \
+    --markdown report.md                # exit 1 on a significant regression
 costless run -c costless.yaml -n 5    # run every case 5 times, write .costless/run.json
                                       # exit 1 if the budget gate fails, 2 on config errors
 ```

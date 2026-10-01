@@ -76,6 +76,46 @@ class BudgetSettings(_Strict):
     )
 
 
+class QualityGate(_Strict):
+    max_drop: float | None = Field(
+        default=0.02, ge=0, le=1, description="Tolerated drop in mean quality (absolute)."
+    )
+    min: float | None = Field(default=None, ge=0, le=1, description="Absolute floor.")
+
+
+class FailureRateGate(_Strict):
+    max_increase: float | None = Field(
+        default=0.05, ge=0, le=1, description="Tolerated rise in failure rate (absolute)."
+    )
+    max: float | None = Field(default=None, ge=0, le=1, description="Absolute ceiling.")
+
+
+class CostGate(_Strict):
+    max_increase_pct: float | None = Field(
+        default=10.0, ge=0, description="Tolerated rise in mean cost per case, in percent."
+    )
+
+
+class LatencyGate(_Strict):
+    max_increase_pct: float | None = Field(
+        default=25.0, ge=0, description="Tolerated rise in p95 latency, in percent."
+    )
+    max_ms: float | None = Field(default=None, gt=0, description="Absolute p95 ceiling.")
+
+
+class GateSettings(_Strict):
+    """Per-metric thresholds; see docs/statistics.md for the decision rule."""
+
+    confidence: float = Field(default=0.95, gt=0.5, lt=1)
+    bootstrap_samples: int = Field(default=10_000, ge=500, le=200_000)
+    seed: int = 0
+    fail_on_inconclusive: bool = False
+    quality: QualityGate = QualityGate()
+    failure_rate: FailureRateGate = FailureRateGate()
+    cost_per_case: CostGate = CostGate()
+    latency_p95: LatencyGate = LatencyGate()
+
+
 class Config(_Strict):
     version: Literal[1]
     target: TargetSpec
@@ -86,6 +126,7 @@ class Config(_Strict):
     )
     pricing: PricingSettings = PricingSettings()
     budget: BudgetSettings = BudgetSettings()
+    gate: GateSettings = GateSettings()
 
 
 @dataclass(frozen=True)

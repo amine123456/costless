@@ -18,10 +18,12 @@ from costless.calibration import (
     load_labels,
 )
 from costless.calibration import calibrate as calibrate_judge
-from costless.config import DEFAULT_CONFIG_PATH, load_config
+from costless.compare import compare_runs
+from costless.config import DEFAULT_CONFIG_PATH, GateSettings, load_config
 from costless.errors import ConfigError, CostlessError
 from costless.models import Attempt, RunResult
-from costless.results import run_json_schema, write_run
+from costless.report import render_markdown
+from costless.results import read_run, run_json_schema, write_run
 from costless.runner import prepare, run_suite
 from costless.scorers import LLMJudgeScorer
 from costless.specs import LLMJudgeSpec, ScorerSpec
@@ -100,6 +102,59 @@ def run(
         typer.echo("")
         for violation in violations:
             typer.echo(f"BUDGET GATE FAILED [{violation.rule}]: {violation.message}", err=True)
+        raise typer.Exit(EXIT_GATE_FAILED)
+
+
+@app.command()
+def compare(
+    candidate: Annotated[
+        Path, typer.Option("--candidate", help="run.json of this change.", dir_okay=False)
+    ] = Path(".costless/run.json"),
+    baseline: Annotated[
+        Path | None,
+        typer.Option("--baseline", "-b", help="run.json of the main branch.", dir_okay=False),
+    ] = None,
+    config: Annotated[
+        Path | None,
+        typer.Option("--config", "-c", help="costless.yaml with gate thresholds.", dir_okay=False),
+    ] = None,
+    allow_missing_baseline: Annotated[
+        bool,
+        typer.Option(help="If the baseline file does not exist, check absolute limits only."),
+    ] = False,
+    markdown: Annotated[
+        Path | None, typer.Option("--markdown", help="Write the Markdown report here.")
+    ] = None,
+    json_out: Annotated[
+        Path | None, typer.Option("--json", help="Write the comparison as JSON here.")
+    ] = None,
+) -> None:
+    """Compare this change with the baseline and fail on significant regressions."""
+    try:
+        gate = load_config(config).config.gate if config else GateSettings()
+        candidate_run = read_run(candidate)
+        baseline_run = None
+        if baseline is not None:
+            if baseline.exists():
+                baseline_run = read_run(baseline)
+            elif not allow_missing_baseline:
+                msg = f"baseline not found: {baseline} (use --allow-missing-baseline on first runs)"
+                raise ConfigError(msg)
+            else:
+                typer.echo(f"warning: no baseline at {baseline}; absolute limits only", err=True)
+        comparison = compare_runs(candidate_run, baseline_run, gate)
+    except CostlessError as exc:
+        _fail(exc)
+
+    report = render_markdown(comparison)
+    if markdown is not None:
+        markdown.parent.mkdir(parents=True, exist_ok=True)
+        markdown.write_text(report, encoding="utf-8")
+    if json_out is not None:
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        json_out.write_text(comparison.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    typer.echo(report)
+    if not comparison.gate_passed:
         raise typer.Exit(EXIT_GATE_FAILED)
 
 

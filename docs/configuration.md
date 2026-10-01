@@ -35,7 +35,20 @@ pricing:                     # optional; Anthropic prices are built in
 budget:                      # optional
   max_run_usd: 5.00          # hard stop: remaining attempts are skipped
   max_case_usd: 0.02         # mean cost of one attempt
+
+gate:                        # thresholds for `costless compare` (defaults shown)
+  confidence: 0.95
+  bootstrap_samples: 10000
+  seed: 0
+  fail_on_inconclusive: false
+  quality:       {max_drop: 0.02, min: null}
+  failure_rate:  {max_increase: 0.05, max: null}
+  cost_per_case: {max_increase_pct: 10}
+  latency_p95:   {max_increase_pct: 25, max_ms: null}
 ```
+
+Set a tolerance to `null` to stop gating on that metric; it is still reported.
+How the gate decides is explained in [statistics.md](statistics.md).
 
 Unknown keys are rejected everywhere, so a typo fails loudly instead of being ignored.
 `costless validate` checks the config, datasets and scorers without calling the target.

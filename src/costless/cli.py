@@ -9,6 +9,7 @@ from typing import Annotated
 import typer
 
 from costless import __version__
+from costless.budget import check_budget
 from costless.config import DEFAULT_CONFIG_PATH, load_config
 from costless.errors import CostlessError
 from costless.models import Attempt, RunResult
@@ -29,6 +30,7 @@ TagOption = Annotated[
     list[str] | None, typer.Option("--tag", "-t", help="Only run cases with this tag (repeatable).")
 ]
 
+EXIT_GATE_FAILED = 1
 EXIT_CONFIG_ERROR = 2
 
 
@@ -83,6 +85,13 @@ def run(
     typer.echo(_render_summary(result))
     typer.echo(f"results written to {output}")
 
+    violations = check_budget(result.summary, loaded.config.budget, loaded.config.pricing)
+    if violations:
+        typer.echo("")
+        for violation in violations:
+            typer.echo(f"BUDGET GATE FAILED [{violation.rule}]: {violation.message}", err=True)
+        raise typer.Exit(EXIT_GATE_FAILED)
+
 
 @app.command()
 def schema() -> None:
@@ -105,10 +114,16 @@ def _render_summary(result: RunResult) -> str:
         ("error rate", f"{s.error_rate:.1%}"),
         ("latency p50 / p95", f"{s.latency_p50_ms:.0f} ms / {s.latency_p95_ms:.0f} ms"),
         ("tokens in / out", f"{s.input_tokens} / {s.output_tokens}"),
+        ("cost total", _usd(s.cost_total_usd)),
+        ("cost per case", _usd(s.cost_per_case_usd)),
         ("flaky cases", str(s.flaky_cases)),
     ]
     width = max(len(label) for label, _ in rows)
     lines = [f"{label.ljust(width)}  {value}" for label, value in rows]
+    if s.unpriced_models:
+        lines.append(f"{'unpriced models'.ljust(width)}  {', '.join(s.unpriced_models)}")
+    if s.skipped_attempts:
+        lines.append(f"{'skipped (budget)'.ljust(width)}  {s.skipped_attempts} attempts")
     failing = [c for c in result.cases if c.pass_rate < 1]
     if failing:
         lines.append("")
@@ -119,6 +134,10 @@ def _render_summary(result: RunResult) -> str:
             for c in failing
         )
     return "\n".join(lines)
+
+
+def _usd(value: float | None) -> str:
+    return "unpriced" if value is None else f"${value:.6f}"
 
 
 def _fail(exc: CostlessError) -> typer.Exit:

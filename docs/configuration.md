@@ -25,6 +25,16 @@ scorers:                     # applied to every case
   - type: exact_match
     path: severity
     weight: 2
+
+pricing:                     # optional; Anthropic prices are built in
+  strict: true               # fail the run if a model call cannot be priced
+  file: pricing.yaml         # optional extra table
+  models:                    # inline prices, USD per million tokens
+    grok-4: {input: 0.0, output: 0.0, cache_read: 0.0}
+
+budget:                      # optional
+  max_run_usd: 5.00          # hard stop: remaining attempts are skipped
+  max_case_usd: 0.02         # mean cost of one attempt
 ```
 
 Unknown keys are rejected everywhere, so a typo fails loudly instead of being ignored.
@@ -130,6 +140,94 @@ The process must print one JSON object to stdout and exit 0:
 
 A non-zero exit status is an attempt error, and the last 500 characters of stderr
 are kept in the error. When a timeout is hit, the process is killed.
+
+## Model providers
+
+An application under test calls models through a costless provider. That way
+every call is metered, and switching providers is just a matter of setting
+environment variables:
+
+```python
+from costless.providers import CompletionRequest, Message, model_from_env, provider_from_env
+
+provider = provider_from_env()
+completion = await provider.complete(
+    CompletionRequest(
+        model=model_from_env(),
+        system="...",
+        messages=(Message(role="user", content=text),),
+    )
+)
+```
+
+| Variable | Meaning |
+|---|---|
+| `COSTLESS_PROVIDER` | `anthropic` (default), `xai`, `openai` or `replay` |
+| `COSTLESS_MODEL` | model id; defaults to `claude-opus-5-5` (anthropic) and `grok-4` (xai) |
+| `COSTLESS_BASE_URL` | endpoint override for `xai` / `openai`, e.g. a local vLLM or Ollama server |
+| `COSTLESS_RECORD_FILE` | append every real call to this JSONL recording |
+| `COSTLESS_REPLAY_FILE` | recording to replay with `COSTLESS_PROVIDER=replay` |
+| `COSTLESS_MAX_RETRIES` | retries on 408/409/429/5xx and connection errors (default 3) |
+| `COSTLESS_TIMEOUT_S` | per-request timeout in seconds (default 120) |
+
+Credentials:
+
+- `ANTHROPIC_API_KEY`, or any credential the Anthropic SDK resolves.
+- `XAI_API_KEY`.
+- `OPENAI_API_KEY`.
+
+The `anthropic` provider uses the official SDK; `xai` and `openai` use the Chat
+Completions API.
+
+Each provider handles a few details:
+
+- **Sampling parameters:** only sent when they are set, because several current
+  Claude models reject them.
+- **Cached prompt tokens:** reported separately from regular input on every
+  provider, so they can be priced correctly.
+- **Refusals:** server-side refusal fallbacks are not enabled. Having a refused
+  request silently answered by a different model would invalidate the comparison.
+  Instead, a refusal is recorded as `stop_reason: refusal` and scored like any
+  other output.
+
+A recording made with `COSTLESS_RECORD_FILE` can be replayed with
+`COSTLESS_PROVIDER=replay`. A replay makes no network calls and fails on any
+request it has no recording for.
+
+## Cost and budget
+
+Each attempt's token usage is priced with a table of USD prices per million tokens.
+
+- **Token types priced:** input, output, cache read and cache write.
+- **Built-in prices:** first-party Anthropic rates, copied from the
+  [Anthropic pricing page](https://platform.claude.com/docs/en/about-claude/pricing).
+  The date they were retrieved is recorded in `src/costless/data/pricing.yaml`.
+- **Not modelled:** the batch discount, fast mode, the US data-residency multiplier,
+  and 1-hour cache writes. Cache writes are priced at the 5-minute rate.
+- **Other models:** add them from the provider's own pricing page, under
+  `pricing.models` or in a `pricing.file`. Keys can be globs such as `grok-4*`.
+  The order of precedence is exact name, then the longest matching glob, then
+  inline prices over file prices over built-in prices.
+
+`run.json` records cost at three levels:
+
+- per attempt (`cost_usd`)
+- per case (`cost_mean_usd`)
+- per run (`cost_total_usd`, plus `cost_per_case_usd`, the mean cost of one attempt)
+
+A cost is `null` when any model involved has no price. Those models are listed
+in `unpriced_models`.
+
+`costless run` exits with status 1 when any of these is true:
+
+- `pricing.strict` is on (the default) and a model call could not be priced.
+  This prevents a missing price from making a run look free.
+- The total cost exceeds `budget.max_run_usd`.
+- The mean cost per attempt exceeds `budget.max_case_usd`.
+
+`max_run_usd` is also enforced while the run is in progress. Once that much has
+been spent, attempts that haven't started are skipped and recorded as skipped,
+and the run fails.
 
 ## Outcomes and metrics
 

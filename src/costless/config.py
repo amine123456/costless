@@ -12,6 +12,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from costless.errors import ConfigError
+from costless.pricing import ModelPrice, PricingTable
 from costless.specs import ScorerSpec
 
 DEFAULT_CONFIG_PATH = Path("costless.yaml")
@@ -52,6 +53,29 @@ class RunSettings(_Strict):
     concurrency: int = Field(default=4, ge=1, le=64)
 
 
+class PricingSettings(_Strict):
+    file: str | None = Field(
+        default=None, description="Extra pricing table, merged over the packaged defaults."
+    )
+    models: dict[str, ModelPrice] = Field(
+        default_factory=dict, description="Inline prices; highest precedence."
+    )
+    strict: bool = Field(
+        default=True, description="Fail the run when a model call cannot be priced."
+    )
+
+
+class BudgetSettings(_Strict):
+    max_run_usd: float | None = Field(
+        default=None,
+        gt=0,
+        description="Hard cap for the whole run. Once spent, remaining attempts are skipped.",
+    )
+    max_case_usd: float | None = Field(
+        default=None, gt=0, description="Upper bound on the mean cost of one attempt."
+    )
+
+
 class Config(_Strict):
     version: Literal[1]
     target: TargetSpec
@@ -60,6 +84,8 @@ class Config(_Strict):
     scorers: tuple[ScorerSpec, ...] = Field(
         default=(), description="Scorers applied to every case, in addition to per-case scorers."
     )
+    pricing: PricingSettings = PricingSettings()
+    budget: BudgetSettings = BudgetSettings()
 
 
 @dataclass(frozen=True)
@@ -71,6 +97,13 @@ class LoadedConfig:
     @property
     def base_dir(self) -> Path:
         return self.path.parent
+
+    def pricing_table(self) -> PricingTable:
+        settings = self.config.pricing
+        table = PricingTable.default()
+        if settings.file is not None:
+            table = table.merged(PricingTable.from_file(self.resolve(settings.file)).prices)
+        return table.merged(settings.models)
 
     def resolve(self, relative: str) -> Path:
         candidate = Path(relative)

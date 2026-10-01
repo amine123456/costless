@@ -23,3 +23,7 @@ class ReplayMissError(CostlessError):
 
 class ResultsError(CostlessError):
     """A results file cannot be read or has an incompatible schema."""
+
+
+class ProviderError(CostlessError):
+    """A model provider call failed after retries."""

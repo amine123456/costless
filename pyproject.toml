@@ -20,6 +20,8 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
+    "anthropic>=1.0",
+    "httpx2>=2.0",
     "jsonschema>=4.23",
     "pydantic>=2.9",
     "pyyaml>=6.0",

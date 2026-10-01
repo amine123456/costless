@@ -18,6 +18,7 @@ import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 
 from costless import __version__
@@ -26,6 +27,7 @@ from costless.context import attempt_scope
 from costless.dataset import Dataset, load_dataset
 from costless.errors import ConfigError
 from costless.models import Attempt, Case, RunMetadata, RunResult, ScoreResult
+from costless.pricing import to_report
 from costless.scorers import Scorer, build_scorer
 from costless.summarize import summarize_case, summarize_run
 from costless.targets import Target, TargetResponse, build_target
@@ -98,13 +100,24 @@ async def run_suite(
         raise ConfigError(msg)
     datasets, items = prepare(loaded, tags=tags)
     target = target or build_target(loaded)
+    pricing = loaded.pricing_table()
+    spend = _SpendGuard(config.budget.max_run_usd)
+    unpriced: set[str] = set()
 
     started_at = datetime.now(UTC)
     semaphore = asyncio.Semaphore(config.run.concurrency)
 
     async def bounded(item: WorkItem, repeat: int) -> Attempt:
         async with semaphore:
-            attempt = await run_attempt(target, item, repeat)
+            if spend.exhausted:
+                attempt = _skipped(item, repeat, spend.limit_usd)
+            else:
+                attempt = await run_attempt(target, item, repeat)
+                breakdown = pricing.cost(attempt.usage)
+                unpriced.update(breakdown.unpriced_models)
+                spend.add(breakdown.usd)
+                if breakdown.complete:
+                    attempt = attempt.model_copy(update={"cost_usd": to_report(breakdown.usd)})
         if on_attempt is not None:
             on_attempt(attempt)
         return attempt
@@ -133,7 +146,7 @@ async def run_suite(
     )
     return RunResult(
         metadata=metadata,
-        summary=summarize_run(summaries, attempts),
+        summary=summarize_run(summaries, attempts, sorted(unpriced)),
         cases=summaries,
         attempts=tuple(attempts),
     )
@@ -181,6 +194,39 @@ async def run_attempt(target: Target, item: WorkItem, repeat: int) -> Attempt:
         scores=scores,
         quality=min(1.0, max(0.0, quality)),
         passed=all(r.passed for r in scores),
+    )
+
+
+class _SpendGuard:
+    """Tracks priced spend and trips once the run budget is used up.
+
+    Attempts already in flight finish; attempts not yet started are skipped.
+    Unpriced calls count as $0 here, so with lenient pricing this is a lower bound.
+    """
+
+    def __init__(self, limit_usd: float | None) -> None:
+        self.limit_usd = limit_usd
+        self._limit = None if limit_usd is None else Decimal(str(limit_usd))
+        self._spent = Decimal(0)
+
+    @property
+    def exhausted(self) -> bool:
+        return self._limit is not None and self._spent >= self._limit
+
+    def add(self, usd: Decimal) -> None:
+        self._spent += usd
+
+
+def _skipped(item: WorkItem, repeat: int, limit_usd: float | None) -> Attempt:
+    return Attempt(
+        case_id=item.case_id,
+        repeat=repeat,
+        output=None,
+        error=f"skipped: run budget of ${limit_usd:g} reached",
+        latency_ms=0.0,
+        quality=0.0,
+        passed=False,
+        skipped=True,
     )
 
 

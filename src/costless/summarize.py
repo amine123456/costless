@@ -23,13 +23,21 @@ def summarize_case(
         latency_mean_ms=mean([a.latency_ms for a in attempts]),
         input_tokens_mean=mean([a.input_tokens for a in attempts]),
         output_tokens_mean=mean([a.output_tokens for a in attempts]),
+        cost_mean_usd=_mean_cost(attempts),
         flaky=0 < passes < len(attempts),
     )
 
 
-def summarize_run(cases: Sequence[CaseSummary], attempts: Sequence[Attempt]) -> RunSummary:
-    latencies = [a.latency_ms for a in attempts]
+def summarize_run(
+    cases: Sequence[CaseSummary],
+    attempts: Sequence[Attempt],
+    unpriced_models: Sequence[str] = (),
+) -> RunSummary:
+    executed = [a for a in attempts if not a.skipped]
+    latencies = [a.latency_ms for a in executed]
     n = len(attempts)
+    costs = [a.cost_usd for a in executed]
+    priced = None if any(c is None for c in costs) else [c for c in costs if c is not None]
     return RunSummary(
         cases=len(cases),
         attempts=n,
@@ -42,4 +50,15 @@ def summarize_run(cases: Sequence[CaseSummary], attempts: Sequence[Attempt]) -> 
         input_tokens=sum(a.input_tokens for a in attempts),
         output_tokens=sum(a.output_tokens for a in attempts),
         flaky_cases=sum(c.flaky for c in cases),
+        cost_total_usd=None if priced is None else sum(priced),
+        cost_per_case_usd=None if priced is None else mean(priced),
+        unpriced_models=tuple(sorted(set(unpriced_models))),
+        skipped_attempts=n - len(executed),
     )
+
+
+def _mean_cost(attempts: Sequence[Attempt]) -> float | None:
+    costs = [a.cost_usd for a in attempts if not a.skipped]
+    if not costs or any(c is None for c in costs):
+        return None
+    return mean([c for c in costs if c is not None])

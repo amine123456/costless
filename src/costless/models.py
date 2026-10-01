@@ -58,6 +58,10 @@ class Attempt(_Model):
     scores: tuple[ScoreResult, ...] = ()
     quality: float = Field(ge=0.0, le=1.0)
     passed: bool
+    cost_usd: float | None = Field(
+        default=None, description="None when a model used in this attempt has no price."
+    )
+    skipped: bool = Field(default=False, description="Not executed: the run budget ran out.")
 
     @property
     def input_tokens(self) -> int:
@@ -80,6 +84,7 @@ class CaseSummary(_Model):
     latency_mean_ms: float
     input_tokens_mean: float
     output_tokens_mean: float
+    cost_mean_usd: float | None
     flaky: bool = Field(description="Passed on some repeats and failed on others.")
 
 
@@ -94,6 +99,12 @@ class RunSummary(_Model):
     input_tokens: int
     output_tokens: int
     flaky_cases: int
+    cost_total_usd: float | None = Field(description="None if any model call was unpriced.")
+    cost_per_case_usd: float | None = Field(
+        description="Mean cost of executing one case once (one attempt)."
+    )
+    unpriced_models: tuple[str, ...] = ()
+    skipped_attempts: int = 0
 
 
 class DatasetInfo(_Model):

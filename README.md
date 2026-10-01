@@ -13,13 +13,19 @@
 - A runner that executes every case N times with bounded concurrency, timeouts and
   per-attempt error capture. It reports the mean and variance per case and flags
   flaky cases.
-- A replay provider that records model responses once and replays them
-  deterministically, for offline tests.
+- A provider-agnostic model interface, configured with environment variables:
+  Anthropic (default), xAI, any OpenAI-compatible endpoint, or a replay file.
+  Every call is metered, with retries and backoff.
+- Cost tracking: token counts priced from a configurable table (Anthropic list
+  prices built in), cost per attempt, per case and per run, and a budget gate.
+  The budget also acts as a hard stop during a run.
+- Record and replay of model responses, for deterministic offline tests.
 - `run.json`, a versioned results document that keeps every attempt.
 
 ```bash
 costless validate -c costless.yaml    # check config, datasets and scorers
 costless run -c costless.yaml -n 5    # run every case 5 times, write .costless/run.json
+                                      # exit 1 if the budget gate fails, 2 on config errors
 ```
 
 The config file, dataset format, scorers and target protocol are described in

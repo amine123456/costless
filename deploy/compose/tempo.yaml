@@ -1,0 +1,26 @@
+# Single-binary Tempo with local storage; fine for a laptop, not for production
+# (see deploy/terraform for S3-backed storage).
+stream_over_http_enabled: true
+
+server:
+  http_listen_port: 3200
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /var/tempo/traces
+    wal:
+      path: /var/tempo/wal
+
+# Tempo 3: retention is enforced by the backend worker's compaction jobs.
+backend_worker:
+  compaction:
+    block_retention: 720h   # 30 days

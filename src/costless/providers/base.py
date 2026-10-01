@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from costless.context import record_usage
 from costless.models import Usage
+from costless.tracing import model_call
 
 
 class _Model(BaseModel):
@@ -53,11 +54,18 @@ class Provider(ABC):
     name: str = "unknown"
 
     async def complete(self, request: CompletionRequest) -> Completion:
-        started = time.perf_counter()
-        completion = await self._complete(request)
-        if completion.latency_ms == 0:
-            elapsed = (time.perf_counter() - started) * 1000
-            completion = completion.model_copy(update={"latency_ms": elapsed})
+        with model_call(
+            self.name,
+            request.model,
+            max_tokens=request.max_tokens,
+            temperature=request.temperature,
+        ) as call:
+            started = time.perf_counter()
+            completion = await self._complete(request)
+            if completion.latency_ms == 0:
+                elapsed = (time.perf_counter() - started) * 1000
+                completion = completion.model_copy(update={"latency_ms": elapsed})
+            call.record(completion.usage, completion.stop_reason)
         record_usage(completion.usage)
         return completion
 

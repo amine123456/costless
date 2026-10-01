@@ -27,6 +27,11 @@
   xAI list prices built in), cost per attempt, per case and per run, and a budget gate.
   The budget also acts as a hard stop during a run.
 - Record and replay of model responses, for deterministic offline tests.
+- OpenTelemetry traces and metrics, following the GenAI semantic conventions:
+  model, tokens, cost and latency on every model-call span, plus run-level
+  quality, cost and latency metrics. A pinned docker compose stack (Collector,
+  Tempo, Prometheus, Grafana) is included. See
+  [docs/observability.md](docs/observability.md).
 - CI integration, documented in [docs/ci.md](docs/ci.md):
   - a GitLab CI/CD component (primary) and a reusable GitHub Actions workflow
   - the default branch stores its run as the baseline

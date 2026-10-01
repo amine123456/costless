@@ -1,0 +1,9 @@
+# Metrics arrive by remote write from the OpenTelemetry Collector;
+# Prometheus only scrapes itself.
+global:
+  scrape_interval: 30s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

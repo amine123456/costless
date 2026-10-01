@@ -21,6 +21,8 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
+from opentelemetry.trace import Span, Status, StatusCode
+
 from costless import __version__
 from costless.config import LoadedConfig
 from costless.context import attempt_scope
@@ -31,6 +33,7 @@ from costless.pricing import to_report
 from costless.scorers import Scorer, build_scorer
 from costless.summarize import summarize_case, summarize_run
 from costless.targets import Target, TargetResponse, build_target
+from costless.tracing import pricing_scope, record_run, run_attributes, tracer
 
 log = logging.getLogger(__name__)
 
@@ -109,26 +112,68 @@ async def run_suite(
 
     async def bounded(item: WorkItem, repeat: int) -> Attempt:
         async with semaphore:
-            if spend.exhausted:
-                attempt = _skipped(item, repeat, spend.limit_usd)
-            else:
-                attempt = await run_attempt(target, item, repeat)
-                target_cost = pricing.cost(attempt.usage)
-                eval_cost = pricing.cost(attempt.eval_usage)
-                unpriced.update(target_cost.unpriced_models, eval_cost.unpriced_models)
-                spend.add(target_cost.usd + eval_cost.usd)  # the wallet pays for both
-                attempt = attempt.model_copy(
-                    update={
-                        "cost_usd": to_report(target_cost.usd) if target_cost.complete else None,
-                        "eval_cost_usd": to_report(eval_cost.usd) if eval_cost.complete else None,
-                    }
-                )
+            with tracer.start_as_current_span(
+                "costless attempt",
+                attributes={"costless.case_id": item.case_id, "costless.repeat": repeat},
+            ) as span:
+                if spend.exhausted:
+                    attempt = _skipped(item, repeat, spend.limit_usd)
+                else:
+                    attempt = await run_attempt(target, item, repeat)
+                    target_cost = pricing.cost(attempt.usage)
+                    eval_cost = pricing.cost(attempt.eval_usage)
+                    unpriced.update(target_cost.unpriced_models, eval_cost.unpriced_models)
+                    spend.add(target_cost.usd + eval_cost.usd)  # the wallet pays for both
+                    attempt = attempt.model_copy(
+                        update={
+                            "cost_usd": to_report(target_cost.usd)
+                            if target_cost.complete
+                            else None,
+                            "eval_cost_usd": to_report(eval_cost.usd)
+                            if eval_cost.complete
+                            else None,
+                        }
+                    )
+                _annotate_attempt(span, attempt)
         if on_attempt is not None:
             on_attempt(attempt)
         return attempt
 
-    attempts = await asyncio.gather(*(bounded(item, r) for item in items for r in range(n_repeats)))
+    with (
+        tracer.start_as_current_span(
+            "costless run",
+            attributes=run_attributes(target.name, n_repeats, [d.name for d in datasets]),
+        ),
+        pricing_scope(pricing),
+    ):
+        attempts = await asyncio.gather(
+            *(bounded(item, r) for item in items for r in range(n_repeats))
+        )
+        result = _assemble(
+            loaded,
+            target=target,
+            datasets=datasets,
+            items=items,
+            attempts=attempts,
+            n_repeats=n_repeats,
+            started_at=started_at,
+            unpriced=unpriced,
+        )
+        record_run(result)
+    return result
 
+
+def _assemble(
+    loaded: LoadedConfig,
+    *,
+    target: Target,
+    datasets: list[Dataset],
+    items: list[WorkItem],
+    attempts: Sequence[Attempt],
+    n_repeats: int,
+    started_at: datetime,
+    unpriced: set[str],
+) -> RunResult:
     by_case: dict[str, list[Attempt]] = {}
     for attempt in attempts:
         by_case.setdefault(attempt.case_id, []).append(attempt)
@@ -186,7 +231,10 @@ async def run_attempt(target: Target, item: WorkItem, repeat: int) -> Attempt:
     output = response.output
     # Scorers run in their own scope: LLM-judge calls are metered as evaluation
     # cost, never as cost of the system under test.
-    with attempt_scope(f"{item.case_id}#eval", repeat) as eval_scope:
+    with (
+        tracer.start_as_current_span("costless score"),
+        attempt_scope(f"{item.case_id}#eval", repeat) as eval_scope,
+    ):
         scores = tuple([await _safe_score(s, item.case, output) for s in item.scorers])
     total_weight = sum(s.weight for s in item.scorers)
     quality = (
@@ -204,6 +252,23 @@ async def run_attempt(target: Target, item: WorkItem, repeat: int) -> Attempt:
         quality=min(1.0, max(0.0, quality)),
         passed=all(r.passed for r in scores),
     )
+
+
+def _annotate_attempt(span: Span, attempt: Attempt) -> None:
+    span.set_attribute("costless.passed", attempt.passed)
+    span.set_attribute("costless.quality", attempt.quality)
+    span.set_attribute("costless.latency_ms", attempt.latency_ms)
+    if attempt.cost_usd is not None:
+        span.set_attribute("costless.cost_usd", attempt.cost_usd)
+    if attempt.eval_cost_usd is not None:
+        span.set_attribute("costless.eval_cost_usd", attempt.eval_cost_usd)
+    if attempt.skipped:
+        span.set_attribute("costless.skipped", True)
+    if attempt.error is not None:
+        span.set_status(Status(StatusCode.ERROR, attempt.error[:200]))
+    failed = [r.scorer for r in attempt.scores if not r.passed]
+    if failed:
+        span.set_attribute("costless.failed_scorers", failed)
 
 
 class _SpendGuard:

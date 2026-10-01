@@ -3,13 +3,14 @@
 import asyncio
 import json
 import sys
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
-from costless import __version__
+from costless import __version__, tracing
 from costless.budget import check_budget
 from costless.calibration import (
     CalibrationReport,
@@ -19,7 +20,7 @@ from costless.calibration import (
 )
 from costless.calibration import calibrate as calibrate_judge
 from costless.ci import CIPlatform, detect_platform
-from costless.compare import compare_runs
+from costless.compare import Comparison, compare_runs
 from costless.config import DEFAULT_CONFIG_PATH, GateSettings, load_config
 from costless.errors import ConfigError, CostlessError
 from costless.models import Attempt, RunResult
@@ -93,9 +94,10 @@ def run(
     """Run every case N times against the target and write run.json."""
     try:
         loaded = load_config(config)
-        result = asyncio.run(
-            run_suite(loaded, repeats=repeats, tags=tag or (), on_attempt=_progress)
-        )
+        with _telemetry():
+            result = asyncio.run(
+                run_suite(loaded, repeats=repeats, tags=tag or (), on_attempt=_progress)
+            )
     except CostlessError as exc:
         _fail(exc)
     typer.echo("", err=True)
@@ -149,6 +151,8 @@ def compare(
             else:
                 typer.echo(f"warning: no baseline at {baseline}; absolute limits only", err=True)
         comparison = compare_runs(candidate_run, baseline_run, gate)
+        with _telemetry():
+            tracing.record_gate(comparison.gate_passed, _gate_labels(comparison))
     except CostlessError as exc:
         _fail(exc)
 
@@ -195,16 +199,17 @@ def calibrate(
             raise ConfigError(msg)
         examples = load_labels(labels_path)
         scorer = LLMJudgeScorer.from_spec(spec)
-        report = asyncio.run(
-            calibrate_judge(
-                scorer,
-                examples,
-                labels_file=str(labels_path),
-                pricing=loaded.pricing_table(),
-                repeats=repeats,
-                concurrency=loaded.config.run.concurrency,
+        with _telemetry(), tracing.pricing_scope(loaded.pricing_table()):
+            report = asyncio.run(
+                calibrate_judge(
+                    scorer,
+                    examples,
+                    labels_file=str(labels_path),
+                    pricing=loaded.pricing_table(),
+                    repeats=repeats,
+                    concurrency=loaded.config.run.concurrency,
+                )
             )
-        )
     except CostlessError as exc:
         _fail(exc)
 
@@ -275,6 +280,13 @@ def ci_check(
 
     Exit status: 0 gate passed, 1 gate failed, 2 configuration or CI error.
     """
+    with _telemetry():
+        _ci_check(config, out_dir, baseline, candidate, comment=comment)
+
+
+def _ci_check(
+    config: Path, out_dir: Path, baseline: Path | None, candidate: Path | None, *, comment: bool
+) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     run_path = out_dir / "run.json"
     try:
@@ -321,8 +333,28 @@ def ci_check(
             # The comment is a convenience; the job status is the gate.
             typer.echo(f"warning: could not post the report comment: {exc}", err=True)
 
-    if not comparison.gate_passed or budget:
+    passed = comparison.gate_passed and not budget
+    tracing.record_gate(passed, _gate_labels(comparison))
+    if not passed:
         raise typer.Exit(EXIT_GATE_FAILED)
+
+
+@contextmanager
+def _telemetry() -> Iterator[None]:
+    """Export traces and metrics while the block runs, if OTEL is configured."""
+    try:
+        handle = tracing.configure()
+    except CostlessError as exc:
+        _fail(exc)
+    try:
+        yield
+    finally:
+        if handle is not None:
+            handle.shutdown()  # flush: CLI processes are short-lived
+
+
+def _gate_labels(comparison: Comparison) -> dict[str, str]:
+    return {"costless.git.ref": comparison.candidate_ref or "unknown"}
 
 
 def _require_platform() -> CIPlatform:

@@ -30,7 +30,7 @@ pricing:                     # optional; Anthropic prices are built in
   strict: true               # fail the run if a model call cannot be priced
   file: pricing.yaml         # optional extra table
   models:                    # inline prices, USD per million tokens
-    grok-4: {input: 0.0, output: 0.0, cache_read: 0.0}
+    my-fine-tune-*: {input: 1.0, output: 4.0}
 
 budget:                      # optional
   max_run_usd: 5.00          # hard stop: remaining attempts are skipped
@@ -163,7 +163,7 @@ completion = await provider.complete(
 | Variable | Meaning |
 |---|---|
 | `COSTLESS_PROVIDER` | `anthropic` (default), `xai`, `openai` or `replay` |
-| `COSTLESS_MODEL` | model id; defaults to `claude-opus-5-5` (anthropic) and `grok-4` (xai) |
+| `COSTLESS_MODEL` | model id; defaults to `claude-opus-5-5` (anthropic) and `grok-4.7` (xai) |
 | `COSTLESS_BASE_URL` | endpoint override for `xai` / `openai`, e.g. a local vLLM or Ollama server |
 | `COSTLESS_RECORD_FILE` | append every real call to this JSONL recording |
 | `COSTLESS_REPLAY_FILE` | recording to replay with `COSTLESS_PROVIDER=replay` |
@@ -199,11 +199,16 @@ request it has no recording for.
 Each attempt's token usage is priced with a table of USD prices per million tokens.
 
 - **Token types priced:** input, output, cache read and cache write.
-- **Built-in prices:** first-party Anthropic rates, copied from the
-  [Anthropic pricing page](https://platform.claude.com/docs/en/about-claude/pricing).
-  The date they were retrieved is recorded in `src/costless/data/pricing.yaml`.
-- **Not modelled:** the batch discount, fast mode, the US data-residency multiplier,
-  and 1-hour cache writes. Cache writes are priced at the 5-minute rate.
+- **Built-in prices:** copied from the providers' own pages, the
+  [Anthropic pricing page](https://platform.claude.com/docs/en/about-claude/pricing)
+  and the [xAI pricing page](https://docs.x.ai/developers/pricing). The date
+  they were retrieved is recorded in `src/costless/data/pricing.yaml`.
+- **Not modelled:** batch discounts, Anthropic fast mode and the US data-residency
+  multiplier, 1-hour cache writes (priced at the 5-minute rate), and xAI's
+  long-context tier (requests of 200k prompt tokens or more).
+- **Reasoning tokens:** on OpenAI-compatible APIs they are counted as output. The
+  larger of `completion_tokens` and `total_tokens - prompt_tokens` is used, so
+  billed output is never under-counted.
 - **Other models:** add them from the provider's own pricing page, under
   `pricing.models` or in a `pricing.file`. Keys can be globs such as `grok-4*`.
   The order of precedence is exact name, then the longest matching glob, then

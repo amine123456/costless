@@ -25,6 +25,15 @@ def test_default_table_matches_published_anthropic_prices() -> None:
     assert (haiku.input, haiku.output) == (Decimal(1), Decimal(5))
 
 
+def test_default_table_matches_published_xai_prices() -> None:
+    # Values from https://docs.x.ai/developers/pricing (2026-10-01), < 200k prompt tier.
+    price = PricingTable.default().price_for("grok-4.7")
+    assert price == ModelPrice(input=Decimal(2), output=Decimal(6), cache_read=Decimal("0.50"))
+    # 1M uncached input + 1M cached input + 1M output
+    cost = PricingTable.default().cost([usage("grok-4.7", i=10**6, cr=10**6, o=10**6)])
+    assert cost.usd == Decimal("8.50")
+
+
 def test_cost_combines_all_token_kinds() -> None:
     table = PricingTable.default()
     # 1M input @ $4 + 0.5M output @ $20 + 2M cache reads @ $0.20 + 0.1M cache writes @ $5
@@ -50,10 +59,10 @@ def test_cache_prices_default_to_input_price() -> None:
 
 def test_unknown_models_are_reported_not_guessed() -> None:
     breakdown = PricingTable.default().cost(
-        [usage("claude-haiku-4-5", i=1_000_000), usage("grok-4", i=10), usage("grok-4", o=1)]
+        [usage("claude-haiku-4-5", i=1_000_000), usage("grok-0", i=10), usage("grok-0", o=1)]
     )
     assert breakdown.usd == Decimal(1)
-    assert breakdown.unpriced_models == frozenset({"grok-4"})
+    assert breakdown.unpriced_models == frozenset({"grok-0"})
     assert not breakdown.complete
 
 

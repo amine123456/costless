@@ -29,7 +29,7 @@ from costless.providers.replay import RecordingProvider, ReplayProvider
 
 DEFAULT_MODELS = {
     "anthropic": "claude-opus-5-5",
-    "xai": "grok-4",
+    "xai": "grok-4.7",
 }
 
 _OPENAI_COMPATIBLE = {

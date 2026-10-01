@@ -105,14 +105,20 @@ def _request_body(request: CompletionRequest) -> dict[str, Any]:
 
 def _usage(provider: str, model: str, raw: dict[str, Any]) -> Usage:
     prompt = int(raw.get("prompt_tokens") or 0)
+    completion = int(raw.get("completion_tokens") or 0)
+    total = int(raw.get("total_tokens") or 0)
     details = raw.get("prompt_tokens_details") or {}
     cached = int(details.get("cached_tokens") or 0)
+    # Providers disagree on whether completion_tokens includes reasoning tokens.
+    # Both are billed as output, and total_tokens always covers them, so take
+    # whichever is larger: this never under-counts billed output.
+    output = max(completion, total - prompt)
     return Usage(
         provider=provider,
         model=model,
         # prompt_tokens includes cached tokens; report them separately, as Anthropic does.
         input_tokens=max(prompt - cached, 0),
-        output_tokens=int(raw.get("completion_tokens") or 0),
+        output_tokens=output,
         cache_read_tokens=cached,
     )
 

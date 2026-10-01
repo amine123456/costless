@@ -186,6 +186,32 @@ class TestOpenAICompatible:
             cache_read_tokens=60,
         )
 
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            # reasoning counted inside completion_tokens (OpenAI convention)
+            {
+                "prompt_tokens": 10,
+                "completion_tokens": 50,
+                "total_tokens": 60,
+                "completion_tokens_details": {"reasoning_tokens": 40},
+            },
+            # reasoning reported outside completion_tokens, but inside total_tokens
+            {
+                "prompt_tokens": 10,
+                "completion_tokens": 10,
+                "total_tokens": 60,
+                "completion_tokens_details": {"reasoning_tokens": 40},
+            },
+        ],
+    )
+    def test_reasoning_tokens_are_billed_as_output(self, raw: dict[str, object]) -> None:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(200, json=chat_completion(**raw))  # type: ignore[arg-type]
+
+        completion = asyncio.run(openai_provider(handler).complete(REQUEST))
+        assert completion.usage.output_tokens == 50
+
     def test_retries_rate_limits_then_succeeds(self) -> None:
         responses = [
             httpx2.Response(429, headers={"retry-after": "0"}, json={"error": "slow down"}),
@@ -259,7 +285,7 @@ class TestFactory:
         provider = provider_from_env(env)
         assert isinstance(provider, OpenAICompatibleProvider)
         assert provider.name == "xai"
-        assert model_from_env(env) == "grok-4"
+        assert model_from_env(env) == "grok-4.7"
         assert model_from_env({**env, "COSTLESS_MODEL": "grok-other"}) == "grok-other"
 
     def test_openai_needs_explicit_model(self) -> None:

@@ -38,6 +38,8 @@ def summarize_run(
     n = len(attempts)
     costs = [a.cost_usd for a in executed]
     priced = None if any(c is None for c in costs) else [c for c in costs if c is not None]
+    eval_costs = [a.eval_cost_usd for a in executed]
+    eval_total = None if any(c is None for c in eval_costs) else sum(c or 0.0 for c in eval_costs)
     return RunSummary(
         cases=len(cases),
         attempts=n,
@@ -52,8 +54,10 @@ def summarize_run(
         flaky_cases=sum(c.flaky for c in cases),
         cost_total_usd=None if priced is None else sum(priced),
         cost_per_case_usd=None if priced is None else mean(priced),
+        eval_cost_total_usd=eval_total,
         unpriced_models=tuple(sorted(set(unpriced_models))),
         skipped_attempts=n - len(executed),
+        scorer_errors=sum(r.error for a in attempts for r in a.scores),
     )
 
 

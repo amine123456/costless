@@ -1,4 +1,5 @@
 import json
+import re
 
 from typer.testing import CliRunner
 
@@ -63,7 +64,7 @@ def test_run_writes_results(write: WriteFile, module_name: str) -> None:
     result = runner.invoke(app, ["run", "-c", config, "-o", str(out)])
 
     assert result.exit_code == 0, result.output
-    assert "quality (mean)     0.500" in result.stdout
+    assert re.search(r"quality \(mean\)\s+0\.500", result.stdout)
     assert "shout/b: pass 0%" in result.stdout
     assert json.loads(out.read_text())["summary"]["attempts"] == 4
 

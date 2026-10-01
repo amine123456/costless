@@ -44,6 +44,12 @@ class ScoreResult(_Model):
     score: float = Field(ge=0.0, le=1.0)
     passed: bool
     detail: str | None = None
+    raw_score: float | None = Field(
+        default=None, description="Score on the scorer's own scale (LLM judges)."
+    )
+    error: bool = Field(
+        default=False, description="The scorer itself failed; the score is not a verdict."
+    )
 
 
 class Attempt(_Model):
@@ -62,6 +68,10 @@ class Attempt(_Model):
         default=None, description="None when a model used in this attempt has no price."
     )
     skipped: bool = Field(default=False, description="Not executed: the run budget ran out.")
+    eval_usage: tuple[Usage, ...] = Field(
+        default=(), description="Model calls made by scorers (LLM judges), not by the target."
+    )
+    eval_cost_usd: float | None = None
 
     @property
     def input_tokens(self) -> int:
@@ -103,8 +113,12 @@ class RunSummary(_Model):
     cost_per_case_usd: float | None = Field(
         description="Mean cost of executing one case once (one attempt)."
     )
+    eval_cost_total_usd: float | None = Field(
+        default=None, description="Cost of LLM-judge calls; not part of the target's cost."
+    )
     unpriced_models: tuple[str, ...] = ()
     skipped_attempts: int = 0
+    scorer_errors: int = 0
 
 
 class DatasetInfo(_Model):

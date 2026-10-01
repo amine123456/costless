@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -114,8 +115,8 @@ def test_cli_exit_codes(write: WriteFile, module_name: str, tmp_path: Path) -> N
 
     ok = runner.invoke(app, ["run", "-c", str(project(write, module_name)), "-o", str(out)])
     assert ok.exit_code == 0, ok.output
-    assert "cost total         $0.012000" in ok.stdout
-    assert "cost per case      $0.002000" in ok.stdout
+    assert re.search(r"cost total\s+\$0\.012000", ok.stdout)
+    assert re.search(r"cost per case\s+\$0\.002000", ok.stdout)
 
     over = runner.invoke(
         app,
@@ -143,4 +144,35 @@ def test_unpriced_models_fail_strict_runs(
     result = CliRunner().invoke(app, ["run", "-c", str(config), "-o", str(tmp_path / "r.json")])
     assert result.exit_code == 1
     assert "no price for model(s) mystery-model" in result.stderr
-    assert "unpriced models    mystery-model" in result.stdout
+    assert re.search(r"unpriced models\s+mystery-model", result.stdout)
+
+
+def test_judge_cost_is_separate_from_target_cost(
+    write: WriteFile, module_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from costless.scorers.llm_judge import LLMJudgeScorer  # noqa: PLC0415
+    from costless.specs import LLMJudgeSpec  # noqa: PLC0415
+    from tests.fakes import ScriptedProvider, verdict  # noqa: PLC0415
+
+    # Judge: 100 input + 20 output tokens on Haiku 4.5 ($1 / $5 per MTok) = $0.0002 per call.
+    def fake_from_spec(cls: type[LLMJudgeScorer], spec: LLMJudgeSpec) -> LLMJudgeScorer:
+        return LLMJudgeScorer(spec, ScriptedProvider(lambda _: verdict(5), "claude-haiku-4-5"), "x")
+
+    monkeypatch.setattr(LLMJudgeScorer, "from_spec", classmethod(fake_from_spec))
+    config = project(write, module_name)
+    text = config.read_text().replace(
+        "scorers: [{type: exact_match}]",
+        "scorers: [{type: exact_match}, {type: llm_judge, rubric: 'Is correct.'}]",
+    )
+    config.write_text(text)
+
+    result = asyncio.run(run_suite(load_config(config)))
+    attempt = result.attempts[0]
+
+    assert attempt.cost_usd == 0.002  # the target's own call only
+    assert attempt.eval_cost_usd == pytest.approx(0.0002)
+    assert [u.model for u in attempt.eval_usage] == ["claude-haiku-4-5"]
+    assert all(u.model == "priced-model" for u in attempt.usage)
+    assert result.summary.cost_total_usd == pytest.approx(0.012)
+    assert result.summary.eval_cost_total_usd == pytest.approx(6 * 0.0002)
+    assert result.summary.scorer_errors == 0

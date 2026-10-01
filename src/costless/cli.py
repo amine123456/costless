@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated
 
@@ -10,11 +11,20 @@ import typer
 
 from costless import __version__
 from costless.budget import check_budget
+from costless.calibration import (
+    CalibrationReport,
+    Proportion,
+    check_calibration,
+    load_labels,
+)
+from costless.calibration import calibrate as calibrate_judge
 from costless.config import DEFAULT_CONFIG_PATH, load_config
-from costless.errors import CostlessError
+from costless.errors import ConfigError, CostlessError
 from costless.models import Attempt, RunResult
 from costless.results import run_json_schema, write_run
 from costless.runner import prepare, run_suite
+from costless.scorers import LLMJudgeScorer
+from costless.specs import LLMJudgeSpec, ScorerSpec
 
 app = typer.Typer(
     name="costless",
@@ -94,9 +104,120 @@ def run(
 
 
 @app.command()
+def calibrate(
+    config: ConfigOption = DEFAULT_CONFIG_PATH,
+    judge: Annotated[
+        str | None, typer.Option("--judge", "-j", help="Name of the llm_judge scorer.")
+    ] = None,
+    labels: Annotated[
+        Path | None,
+        typer.Option(
+            "--labels", "-l", help="Human labels; defaults to the judge's calibration.labels."
+        ),
+    ] = None,
+    repeats: Annotated[
+        int, typer.Option("--repeats", "-n", min=1, help="Judge runs per example.")
+    ] = 3,
+    output: Annotated[
+        Path, typer.Option("--output", "-o", help="Where to write the report.", dir_okay=False)
+    ] = Path(".costless/calibration.json"),
+) -> None:
+    """Measure how well an LLM judge agrees with human-labelled examples."""
+    try:
+        loaded = load_config(config)
+        spec = _judge_spec(loaded.config.scorers, judge)
+        labels_path = labels or (
+            loaded.resolve(spec.calibration.labels) if spec.calibration else None
+        )
+        if labels_path is None:
+            msg = "no labels: pass --labels or set calibration.labels on the judge"
+            raise ConfigError(msg)
+        examples = load_labels(labels_path)
+        scorer = LLMJudgeScorer.from_spec(spec)
+        report = asyncio.run(
+            calibrate_judge(
+                scorer,
+                examples,
+                labels_file=str(labels_path),
+                pricing=loaded.pricing_table(),
+                repeats=repeats,
+                concurrency=loaded.config.run.concurrency,
+            )
+        )
+    except CostlessError as exc:
+        _fail(exc)
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(report.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    typer.echo(_render_calibration(report))
+    typer.echo(f"report written to {output}")
+
+    thresholds = spec.calibration
+    failures = check_calibration(
+        report,
+        min_pass_agreement=thresholds.min_pass_agreement if thresholds else None,
+        min_kappa=thresholds.min_kappa if thresholds else None,
+    )
+    if failures:
+        typer.echo("")
+        for failure in failures:
+            typer.echo(f"CALIBRATION FAILED: {failure}", err=True)
+        raise typer.Exit(EXIT_GATE_FAILED)
+
+
+@app.command()
 def schema() -> None:
     """Print the JSON Schema of run.json."""
     typer.echo(json.dumps(run_json_schema(), indent=2))
+
+
+def _judge_spec(scorers: Sequence[ScorerSpec], name: str | None) -> LLMJudgeSpec:
+    judges = [s for s in scorers if isinstance(s, LLMJudgeSpec)]
+    if name is not None:
+        judges = [s for s in judges if (s.name or "llm_judge") == name]
+    if not judges:
+        msg = "no llm_judge scorer" + (f" named {name!r}" if name else "") + " in the config"
+        raise ConfigError(msg)
+    if len(judges) > 1:
+        msg = "several llm_judge scorers in the config; choose one with --judge"
+        raise ConfigError(msg)
+    return judges[0]
+
+
+def _render_calibration(report: CalibrationReport) -> str:
+    def prop(p: Proportion) -> str:
+        low, high = p.ci95
+        return f"{p.value:.0%} ({p.successes}/{p.n}, 95% CI {low:.0%}-{high:.0%})"
+
+    def kappa(value: float | None) -> str:
+        return "undefined" if value is None else f"{value:.2f}"
+
+    rows = [
+        ("judge", f"{report.judge} ({report.model})"),
+        (
+            "examples",
+            f"{report.scored_examples}/{report.examples} scored x {report.repeats} repeats",
+        ),
+        ("pass agreement", prop(report.pass_agreement)),
+        ("exact agreement", prop(report.exact_agreement)),
+        ("within one point", prop(report.within_one_agreement)),
+        ("kappa (pass/fail)", kappa(report.pass_kappa)),
+        ("kappa (weighted)", kappa(report.weighted_kappa)),
+        ("bias (judge-human)", f"{report.bias:+.2f}"),
+        ("self-consistency", f"{report.self_consistency:.0%}"),
+        ("judge errors", str(report.judge_errors)),
+        ("cost", _usd(report.cost_usd)),
+    ]
+    width = max(len(label) for label, _ in rows)
+    lines = [f"{label.ljust(width)}  {value}" for label, value in rows]
+    if report.disagreements:
+        lines += ["", "pass/fail disagreements:"]
+        lines += [
+            f"  {r.id}: human {r.human_score}, judge {r.judge_score} {list(r.judge_scores)}"
+            + (f" - {r.reasoning[:100]}" if r.reasoning else "")
+            for r in report.disagreements
+        ]
+    return "\n".join(lines)
 
 
 def _progress(attempt: Attempt) -> None:
@@ -116,12 +237,17 @@ def _render_summary(result: RunResult) -> str:
         ("tokens in / out", f"{s.input_tokens} / {s.output_tokens}"),
         ("cost total", _usd(s.cost_total_usd)),
         ("cost per case", _usd(s.cost_per_case_usd)),
+        ("eval cost (judges)", _usd(s.eval_cost_total_usd)),
         ("flaky cases", str(s.flaky_cases)),
     ]
     width = max(len(label) for label, _ in rows)
     lines = [f"{label.ljust(width)}  {value}" for label, value in rows]
     if s.unpriced_models:
         lines.append(f"{'unpriced models'.ljust(width)}  {', '.join(s.unpriced_models)}")
+    if s.scorer_errors:
+        lines.append(
+            f"{'scorer errors'.ljust(width)}  {s.scorer_errors} (not verdicts; see run.json)"
+        )
     if s.skipped_attempts:
         lines.append(f"{'skipped (budget)'.ljust(width)}  {s.skipped_attempts} attempts")
     failing = [c for c in result.cases if c.pass_rate < 1]

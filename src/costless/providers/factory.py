@@ -11,6 +11,8 @@ COSTLESS_REPLAY_FILE   recording to replay (provider ``replay``)
 COSTLESS_RECORD_FILE   record every real call to this JSONL file
 COSTLESS_MAX_RETRIES   default 3
 COSTLESS_TIMEOUT_S     per-request timeout, default 120
+COSTLESS_JUDGE_PROVIDER  provider for LLM judges (default: COSTLESS_PROVIDER)
+COSTLESS_JUDGE_MODEL     model for LLM judges
 =====================  ==================================================
 
 Credentials: ``ANTHROPIC_API_KEY`` (or any credential the Anthropic SDK
@@ -78,6 +80,26 @@ def provider_from_env(env: Mapping[str, str] | None = None) -> Provider:
     if record_file:
         return RecordingProvider(provider, Path(record_file))
     return provider
+
+
+def judge_provider_and_model(
+    provider: str | None, model: str | None, env: Mapping[str, str] | None = None
+) -> tuple[Provider, str]:
+    """Provider and model for an LLM judge.
+
+    Precedence: the judge's own config, then COSTLESS_JUDGE_PROVIDER /
+    COSTLESS_JUDGE_MODEL, then the target's COSTLESS_PROVIDER / COSTLESS_MODEL.
+    """
+    env = dict(os.environ if env is None else env)
+    name = provider or env.get("COSTLESS_JUDGE_PROVIDER") or env.get("COSTLESS_PROVIDER")
+    judge_env = {**env, "COSTLESS_PROVIDER": name or "anthropic"}
+    if name != env.get("COSTLESS_PROVIDER"):
+        # A different provider than the target's: don't inherit the target's model.
+        judge_env.pop("COSTLESS_MODEL", None)
+    chosen = model or env.get("COSTLESS_JUDGE_MODEL")
+    if chosen:
+        judge_env["COSTLESS_MODEL"] = chosen
+    return provider_from_env(judge_env), model_from_env(judge_env)
 
 
 def model_from_env(env: Mapping[str, str] | None = None) -> str:

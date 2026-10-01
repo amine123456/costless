@@ -71,6 +71,11 @@ class OpenAICompatibleProvider(Provider):
 
             if response.status_code < 400:
                 return response
+            daily = _daily_quota_exhausted(response)
+            if daily is not None:
+                # Waiting a few seconds cannot help with a per-day quota: fail fast.
+                msg = f"{self.name} daily quota exhausted ({daily}); retry tomorrow or upgrade"
+                raise ProviderError(msg)
             if response.status_code in _RETRYABLE_STATUS and attempt < self._max_retries:
                 await asyncio.sleep(self._backoff(attempt, _server_retry_delay(response)))
                 attempt += 1
@@ -139,6 +144,21 @@ def _server_retry_delay(response: httpx2.Response) -> float | None:
                 return max(float(raw.removesuffix("s")), 0.0)
             except ValueError:
                 return None
+    return None
+
+
+def _daily_quota_exhausted(response: httpx2.Response) -> str | None:
+    """Google reports which quota was hit; return its id if it is a per-day quota."""
+    if response.status_code != 429:
+        return None
+    error = _error_object(response)
+    details = error.get("details") if error else None
+    for detail in details if isinstance(details, list) else ():
+        violations = detail.get("violations") if isinstance(detail, dict) else None
+        for violation in violations if isinstance(violations, list) else ():
+            quota_id = str(violation.get("quotaId", "")) if isinstance(violation, dict) else ""
+            if "PerDay" in quota_id:
+                return quota_id
     return None
 
 

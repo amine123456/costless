@@ -5,7 +5,11 @@ Applications under test get a provider with :func:`provider_from_env` and call
 """
 
 from costless.providers.base import Completion, CompletionRequest, Message, Provider
-from costless.providers.factory import model_from_env, provider_from_env
+from costless.providers.factory import (
+    judge_provider_and_model,
+    model_from_env,
+    provider_from_env,
+)
 from costless.providers.replay import RecordingProvider, ReplayProvider
 
 __all__ = [
@@ -15,6 +19,7 @@ __all__ = [
     "Provider",
     "RecordingProvider",
     "ReplayProvider",
+    "judge_provider_and_model",
     "model_from_env",
     "provider_from_env",
 ]

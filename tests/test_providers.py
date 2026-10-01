@@ -252,6 +252,35 @@ class TestOpenAICompatible:
             asyncio.run(provider.complete(REQUEST))
         assert sleeps == [37.0]  # the server's delay, not exponential backoff
 
+    def test_daily_quota_is_not_retried(self) -> None:
+        calls = 0
+        body = [
+            {
+                "error": {
+                    "code": 429,
+                    "message": "Quota exceeded",
+                    "details": [
+                        {
+                            "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+                            "violations": [
+                                {"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}
+                            ],
+                        },
+                        {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "42s"},
+                    ],
+                }
+            }
+        ]
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            nonlocal calls
+            calls += 1
+            return httpx2.Response(429, json=body)
+
+        with pytest.raises(ProviderError, match="daily quota exhausted"):
+            asyncio.run(openai_provider(handler, max_retries=5).complete(REQUEST))
+        assert calls == 1
+
     def test_gives_up_after_max_retries(self) -> None:
         calls = 0
 

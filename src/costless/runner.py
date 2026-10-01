@@ -113,11 +113,16 @@ async def run_suite(
                 attempt = _skipped(item, repeat, spend.limit_usd)
             else:
                 attempt = await run_attempt(target, item, repeat)
-                breakdown = pricing.cost(attempt.usage)
-                unpriced.update(breakdown.unpriced_models)
-                spend.add(breakdown.usd)
-                if breakdown.complete:
-                    attempt = attempt.model_copy(update={"cost_usd": to_report(breakdown.usd)})
+                target_cost = pricing.cost(attempt.usage)
+                eval_cost = pricing.cost(attempt.eval_usage)
+                unpriced.update(target_cost.unpriced_models, eval_cost.unpriced_models)
+                spend.add(target_cost.usd + eval_cost.usd)  # the wallet pays for both
+                attempt = attempt.model_copy(
+                    update={
+                        "cost_usd": to_report(target_cost.usd) if target_cost.complete else None,
+                        "eval_cost_usd": to_report(eval_cost.usd) if eval_cost.complete else None,
+                    }
+                )
         if on_attempt is not None:
             on_attempt(attempt)
         return attempt
@@ -179,7 +184,10 @@ async def run_attempt(target: Target, item: WorkItem, repeat: int) -> Attempt:
         )
 
     output = response.output
-    scores = tuple([await _safe_score(s, item.case, output) for s in item.scorers])
+    # Scorers run in their own scope: LLM-judge calls are metered as evaluation
+    # cost, never as cost of the system under test.
+    with attempt_scope(f"{item.case_id}#eval", repeat) as eval_scope:
+        scores = tuple([await _safe_score(s, item.case, output) for s in item.scorers])
     total_weight = sum(s.weight for s in item.scorers)
     quality = (
         sum(r.score * s.weight for r, s in zip(scores, item.scorers, strict=True)) / total_weight
@@ -192,6 +200,7 @@ async def run_attempt(target: Target, item: WorkItem, repeat: int) -> Attempt:
         latency_ms=latency_ms,
         usage=usage,
         scores=scores,
+        eval_usage=tuple(eval_scope.usage),
         quality=min(1.0, max(0.0, quality)),
         passed=all(r.passed for r in scores),
     )
@@ -236,7 +245,7 @@ async def _safe_score(scorer: Scorer, case: Case, output: str) -> ScoreResult:
     except Exception as exc:  # noqa: BLE001 - a crashing scorer must not abort the run
         log.warning("scorer %s crashed on %s: %s", scorer.name, case.id, exc)
         return ScoreResult(
-            scorer=scorer.name, score=0.0, passed=False, detail=f"scorer error: {exc}"
+            scorer=scorer.name, score=0.0, passed=False, detail=f"scorer error: {exc}", error=True
         )
 
 

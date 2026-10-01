@@ -8,6 +8,12 @@
 
 - Versioned eval datasets in YAML or JSONL, with content hashes and tags.
 - Deterministic scorers: exact match, regex and JSON Schema validation, with weights.
+- An LLM-as-judge scorer with explicit rubrics and score anchors. Its prompt is
+  hardened against injection from the output being graded, and its cost is
+  tracked separately from the application's.
+- Judge calibration against human-labelled examples: agreement rates with 95%
+  Wilson intervals, Cohen's kappa and weighted kappa, plus judge bias and
+  self-consistency. It can fail CI when the judge disagrees with humans.
 - Two kinds of system under test: an in-process Python callable, or any executable
   that speaks JSON over stdin/stdout.
 - A runner that executes every case N times with bounded concurrency, timeouts and
@@ -25,6 +31,7 @@
 
 ```bash
 costless validate -c costless.yaml    # check config, datasets and scorers
+costless calibrate -c costless.yaml   # how well does the LLM judge agree with humans?
 costless run -c costless.yaml -n 5    # run every case 5 times, write .costless/run.json
                                       # exit 1 if the budget gate fails, 2 on config errors
 ```

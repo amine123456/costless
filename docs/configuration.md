@@ -76,6 +76,7 @@ explanation when it fails.
 | `exact_match` | the output equals `expected` | `path`, `case_sensitive` (true), `normalize_whitespace` (true) |
 | `regex` | the pattern is found in the output (or, with `negate`, is not) | `pattern`, `path`, `ignore_case`, `negate` |
 | `json_schema` | the output is JSON valid against the schema (draft 2020-12) | `schema`: inline object or a file path |
+| `llm_judge` | an LLM scores the output at or above `pass_threshold` | see [LLM judge](#llm-judge) |
 
 All scorers also accept `name` and `weight` (default 1).
 
@@ -88,6 +89,99 @@ wrapped in a single Markdown code fence are accepted.
   If `expected` is a scalar, it compares with `expected` directly.
 - Without `path`, a string `expected` is compared with the raw output text. Any other
   `expected` is compared with the parsed JSON output.
+
+## LLM judge
+
+```yaml
+scorers:
+  - type: llm_judge
+    name: summary_quality
+    rubric: >-
+      The summary names the failing component, the customer impact and the
+      current status. It invents nothing that is not in the report.
+    scale_min: 1
+    scale_max: 5
+    anchors:
+      5: all three facts, nothing invented
+      3: one fact missing or vague
+      1: wrong, invented, or unusable
+    pass_threshold: 4          # default: scale_max - 1
+    provider: gemini           # default: COSTLESS_JUDGE_PROVIDER, then COSTLESS_PROVIDER
+    model: gemini-3.5-flash-lite
+    include_reference: true    # show the case's `expected` to the judge
+    calibration:
+      labels: evals/judge-labels.yaml
+      min_pass_agreement: 0.8
+      min_kappa: 0.6
+```
+
+The judge's prompt is built from:
+
+- the scorer's rubric, plus the case's own `rubric` if it has one
+- the scale, with every anchor spelled out
+- the case input and, if `include_reference` is on, the expected answer
+- the output being graded
+
+Everything that comes from the system under test is enclosed in tags and
+declared to be data. This stops an output from telling the judge how to score it.
+
+The judge writes a short justification first, then an integer score. That
+score is normalised to [0, 1] and used as the case's quality, and the case
+passes when the score reaches `pass_threshold`.
+
+A reply that cannot be parsed is retried once. If it still fails, it is recorded
+as a **scorer error** (`error: true` in run.json, `scorer_errors` in the summary),
+not as a quality failure of the target.
+
+Judge calls are metered separately: `eval_usage` and `eval_cost_usd` per attempt,
+`eval_cost_total_usd` per run. They never count toward the target's cost or
+`max_case_usd`. They do count toward `max_run_usd`, because the same budget pays
+for both.
+
+### Calibration
+
+```bash
+costless calibrate -c costless.yaml --judge summary_quality -n 3
+```
+
+Calibration needs a small set of outputs that people have scored on the same
+scale as the judge:
+
+```yaml
+- id: good-summary
+  input: {report: "..."}
+  output: "Postgres primary down; checkout failing for all EU users; failover in progress."
+  human_score: 5
+- id: invented-cause
+  output: "Outage caused by a bad deploy."  # the report never says that
+  human_score: 1
+```
+
+The judge scores each example `-n` times; its verdict is the median score.
+The report gives:
+
+| Metric | Meaning |
+|---|---|
+| pass agreement | same pass/fail verdict as the human, with a 95% Wilson interval |
+| exact / within-one agreement | agreement on the raw scale, with 95% intervals |
+| kappa (pass/fail) | Cohen's kappa on the verdict, corrected for chance agreement |
+| kappa (weighted) | quadratic-weighted Cohen's kappa on the scale |
+| bias | mean of judge minus human; positive means the judge is more lenient |
+| self-consistency | share of examples where every repeat gave the same score |
+
+The pass/fail disagreements are listed with the judge's reasoning, which is
+usually the fastest way to improve a rubric.
+
+`costless calibrate` exits with status 1 in either of these cases:
+
+- pass agreement is below `min_pass_agreement`
+- weighted kappa is below `min_kappa`
+
+Running calibration in CI therefore stops an uncalibrated judge from gating merges.
+
+With 20 to 30 examples the intervals are wide, and they are reported anyway
+because that uncertainty is real. Labels must come from people: the purpose of
+calibration is to measure the judge against human judgement.
 
 ## Targets
 

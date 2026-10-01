@@ -1,5 +1,7 @@
 """Render a comparison as Markdown, for merge request / pull request comments."""
 
+from collections.abc import Sequence
+
 from costless import __version__
 from costless.compare import CaseChange, Comparison, MetricComparison, Status
 
@@ -22,11 +24,10 @@ _LABEL = {
 }
 
 
-def render_markdown(comparison: Comparison) -> str:
+def render_markdown(comparison: Comparison, *, budget_failures: Sequence[str] = ()) -> str:
     c = comparison
-    verdict = (
-        "✅ costless: quality gate passed" if c.gate_passed else "❌ costless: quality gate failed"
-    )
+    passed = c.gate_passed and not budget_failures
+    verdict = "✅ costless: quality gate passed" if passed else "❌ costless: quality gate failed"
     lines = [MARKER, f"## {verdict}", "", _context(c), ""]
 
     lines += [
@@ -35,9 +36,10 @@ def render_markdown(comparison: Comparison) -> str:
     ]
     lines += [_metric_row(m) for m in c.metrics]
 
-    if c.reasons:
+    if c.reasons or budget_failures:
         lines += ["", "**Blocking:**"]
         lines += [f"- {reason}" for reason in c.reasons]
+        lines += [f"- budget: {failure}" for failure in budget_failures]
     if any(m.status == Status.INCONCLUSIVE for m in c.metrics):
         lines += [
             "",

@@ -24,6 +24,8 @@ jobs:
       - run: uv run ruff check --output-format=github .
       - run: uv run ruff format --check .
       - run: uv run mypy
+      - name: Lint workflows
+        run: uvx --from actionlint-py actionlint
 
   test:
     runs-on: ubuntu-24.04

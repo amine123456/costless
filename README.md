@@ -27,6 +27,11 @@
   xAI list prices built in), cost per attempt, per case and per run, and a budget gate.
   The budget also acts as a hard stop during a run.
 - Record and replay of model responses, for deterministic offline tests.
+- CI integration, documented in [docs/ci.md](docs/ci.md):
+  - a GitLab CI/CD component (primary) and a reusable GitHub Actions workflow
+  - the default branch stores its run as the baseline
+  - every MR/PR is compared against that baseline, gets a before/after report
+    comment that is edited in place on each push, and fails on regressions
 - Baseline comparison with a paired cluster bootstrap. It blocks a merge only
   on regressions that are both statistically significant and larger than the
   tolerance you set, for quality, failure rate, cost and p95 latency. Absolute

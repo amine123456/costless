@@ -1,0 +1,97 @@
+# Reusable workflow: evaluate an LLM application, compare each pull request with
+# the base branch, comment on the PR, and fail on regressions.
+#
+#   on:
+#     push: {branches: [main]}
+#     pull_request:
+#   permissions: {contents: read, pull-requests: write, actions: read}
+#   jobs:
+#     costless:
+#       uses: amine123456/costless/.github/workflows/costless.yml@main
+#       with: {config: evals/costless.yaml}
+#       secrets: inherit
+#
+# Repository secrets used if present: GEMINI_API_KEY, ANTHROPIC_API_KEY,
+# XAI_API_KEY, OPENAI_API_KEY.
+name: costless
+
+on:
+  workflow_call:
+    inputs:
+      config:
+        description: Path to costless.yaml.
+        type: string
+        default: costless.yaml
+      python-version:
+        type: string
+        default: "3.12"
+      install:
+        description: Command that installs costless and your application's dependencies.
+        type: string
+        default: pip install --quiet "costless @ git+https://github.com/amine123456/costless.git@main"
+      artifact-name:
+        description: Name of the baseline artifact.
+        type: string
+        default: costless-baseline
+      continue-on-regression:
+        description: Report regressions without failing the check.
+        type: boolean
+        default: false
+
+env:
+  GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+  ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+  XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+jobs:
+  baseline:
+    if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+      - name: Install
+        run: ${{ inputs.install }}
+      - name: Run eval
+        run: costless run --config "${{ inputs.config }}" --output .costless/run.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: .costless/run.json
+          retention-days: 90
+          if-no-files-found: error
+
+  check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
+    continue-on-error: ${{ inputs.continue-on-regression }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+      - name: Install
+        run: ${{ inputs.install }}
+      - name: Evaluate, compare and gate
+        run: costless ci check --config "${{ inputs.config }}" --out-dir .costless
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          COSTLESS_BASELINE_ARTIFACT: ${{ inputs.artifact-name }}
+      - name: Job summary
+        if: always()
+        run: test -f .costless/report.md && cat .costless/report.md >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: costless-report-${{ github.event.pull_request.number }}
+          path: .costless/
+          retention-days: 30

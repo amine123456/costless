@@ -18,6 +18,7 @@ from costless.calibration import (
     load_labels,
 )
 from costless.calibration import calibrate as calibrate_judge
+from costless.ci import CIPlatform, detect_platform
 from costless.compare import compare_runs
 from costless.config import DEFAULT_CONFIG_PATH, GateSettings, load_config
 from costless.errors import ConfigError, CostlessError
@@ -34,6 +35,11 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+ci_app = typer.Typer(
+    help="CI helpers: baseline download, MR/PR comments, and the full check.",
+    no_args_is_help=True,
+)
+app.add_typer(ci_app, name="ci")
 
 ConfigOption = Annotated[
     Path, typer.Option("--config", "-c", help="Path to costless.yaml.", dir_okay=False)
@@ -218,6 +224,113 @@ def calibrate(
         for failure in failures:
             typer.echo(f"CALIBRATION FAILED: {failure}", err=True)
         raise typer.Exit(EXIT_GATE_FAILED)
+
+
+@ci_app.command("fetch-baseline")
+def ci_fetch_baseline(
+    output: Annotated[Path, typer.Option("--output", "-o", dir_okay=False)] = Path(
+        ".costless/baseline.json"
+    ),
+) -> None:
+    """Download the target branch's latest run.json (exit 0 even if there is none yet)."""
+    try:
+        platform = _require_platform()
+        found = platform.fetch_baseline(output)
+    except CostlessError as exc:
+        _fail(exc)
+    typer.echo(f"baseline written to {output}" if found else "no baseline available yet")
+
+
+@ci_app.command("comment")
+def ci_comment(
+    body: Annotated[Path, typer.Option("--body", dir_okay=False, exists=True)] = Path(
+        ".costless/report.md"
+    ),
+) -> None:
+    """Create or update the costless report comment on the current MR / PR."""
+    try:
+        where = _require_platform().upsert_comment(body.read_text(encoding="utf-8"))
+    except CostlessError as exc:
+        _fail(exc)
+    typer.echo(f"report comment: {where}")
+
+
+@ci_app.command("check")
+def ci_check(
+    config: ConfigOption = DEFAULT_CONFIG_PATH,
+    out_dir: Annotated[
+        Path, typer.Option("--out-dir", help="Where run, baseline and report files go.")
+    ] = Path(".costless"),
+    baseline: Annotated[
+        Path | None,
+        typer.Option("--baseline", "-b", help="Use this baseline file instead of downloading."),
+    ] = None,
+    candidate: Annotated[
+        Path | None,
+        typer.Option("--candidate", help="Use an existing run.json instead of running the eval."),
+    ] = None,
+    comment: Annotated[bool, typer.Option(help="Post the report on the MR / PR.")] = True,
+) -> None:
+    """Run the eval, compare with the baseline, comment on the MR / PR, and gate.
+
+    Exit status: 0 gate passed, 1 gate failed, 2 configuration or CI error.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    run_path = out_dir / "run.json"
+    try:
+        loaded = load_config(config)
+        platform = detect_platform()
+        if candidate is not None:
+            result = read_run(candidate)
+        else:
+            result = asyncio.run(run_suite(loaded, on_attempt=_progress))
+            typer.echo("", err=True)
+        write_run(result, run_path)
+        typer.echo(_render_summary(result))
+
+        baseline_run = None
+        if baseline is not None:
+            baseline_run = read_run(baseline)
+        elif platform is not None:
+            fetched = out_dir / "baseline.json"
+            if platform.fetch_baseline(fetched):
+                baseline_run = read_run(fetched)
+        if baseline_run is None:
+            typer.echo("warning: no baseline run found; checking absolute limits only", err=True)
+
+        comparison = compare_runs(result, baseline_run, loaded.config.gate)
+    except CostlessError as exc:
+        _fail(exc)
+
+    budget = [
+        f"[{v.rule}] {v.message}"
+        for v in check_budget(result.summary, loaded.config.budget, loaded.config.pricing)
+    ]
+    report = render_markdown(comparison, budget_failures=budget)
+    (out_dir / "report.md").write_text(report, encoding="utf-8")
+    (out_dir / "comparison.json").write_text(
+        comparison.model_dump_json(indent=2) + "\n", encoding="utf-8"
+    )
+    typer.echo("")
+    typer.echo(report)
+
+    if comment and platform is not None:
+        try:
+            typer.echo(f"report comment: {platform.upsert_comment(report)}")
+        except CostlessError as exc:
+            # The comment is a convenience; the job status is the gate.
+            typer.echo(f"warning: could not post the report comment: {exc}", err=True)
+
+    if not comparison.gate_passed or budget:
+        raise typer.Exit(EXIT_GATE_FAILED)
+
+
+def _require_platform() -> CIPlatform:
+    platform = detect_platform()
+    if platform is None:
+        msg = "not running in GitLab CI or GitHub Actions"
+        raise ConfigError(msg)
+    return platform
 
 
 @app.command()

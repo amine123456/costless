@@ -1,0 +1,74 @@
+# costless CI/CD component: evaluate an LLM application on every merge request,
+# compare it with the target branch, comment on the MR, and block regressions.
+#
+#   include:
+#     - component: $CI_SERVER_FQDN/<group>/costless/costless@<version>
+#       inputs:
+#         config: evals/costless.yaml
+#
+# Jobs:
+#   costless-baseline  default branch: run the eval and keep run.json as the baseline
+#   costless-check     merge requests: run, compare with the baseline, comment, gate
+#
+# CI/CD variables (masked):
+#   provider key       GEMINI_API_KEY / ANTHROPIC_API_KEY / XAI_API_KEY / OPENAI_API_KEY
+#   COSTLESS_GITLAB_TOKEN  project access token, role Reporter, scope `api`
+#                          (needed to post the MR comment; CI_JOB_TOKEN cannot)
+spec:
+  inputs:
+    stage:
+      default: test
+      description: Stage both jobs run in.
+    config:
+      default: costless.yaml
+      description: Path to costless.yaml, relative to the repository root.
+    image:
+      default: python:3.12-slim
+      description: Image with Python 3.12+ (and whatever your application needs).
+    install:
+      default: pip install --quiet "costless @ git+https://github.com/amine123456/costless.git@main"
+      description: Command that installs costless, and your application's dependencies.
+    baseline_expire_in:
+      default: 90 days
+      description: How long baseline artifacts are kept.
+    allow_failure:
+      default: false
+      type: boolean
+      description: Report regressions without blocking the merge request.
+---
+.costless-base:
+  stage: $[[ inputs.stage ]]
+  image: $[[ inputs.image ]]
+  interruptible: true
+  variables:
+    COSTLESS_BASELINE_JOB: costless-baseline
+    COSTLESS_BASELINE_PATH: .costless/run.json
+    PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  before_script:
+    - $[[ inputs.install ]]
+
+costless-baseline:
+  extends: .costless-base
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE != "merge_request_event"
+  script:
+    - costless run --config "$[[ inputs.config ]]" --output .costless/run.json
+  artifacts:
+    # Only successful runs become baselines: a failed job's artifacts are never
+    # returned by the "latest successful job on this ref" API.
+    paths:
+      - .costless/run.json
+    expire_in: $[[ inputs.baseline_expire_in ]]
+
+costless-check:
+  extends: .costless-base
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  allow_failure: $[[ inputs.allow_failure ]]
+  script:
+    - costless ci check --config "$[[ inputs.config ]]" --out-dir .costless
+  artifacts:
+    when: always
+    paths:
+      - .costless/
+    expire_in: 30 days
